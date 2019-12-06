@@ -4,28 +4,81 @@
 #include <sys/stat.h>
 #include <string.h>
 #include <stdlib.h>
+#include <set>
 #include <assert.h>
 #include <unistd.h>
 #include <clang-c/Index.h>
+#include "Tools.h"
 
-const char *opensslincludes();
 struct Data {
-
-
+    std::set<std::string> seenStructs;
+    std::string structsOut;
+    std::string funcsOut;
 };
 
-
-CXChildVisitResult visitor(CXCursor cursor,
-                           CXCursor /* parent */,
-                           CXClientData client_data)
+static CXChildVisitResult visitor(CXCursor cursor,
+                                  CXCursor /* parent */,
+                                  CXClientData client_data)
 {
+    const CXSourceLocation loc = clang_getCursorLocation(cursor);
+    if (!clang_Location_isFromMainFile(loc) && !isMatchingInclude(loc)) {
+        // CXFile file = nullptr;
+        // clang_getSpellingLocation(loc, &file, nullptr, nullptr, nullptr);
+        // fprintf(stderr, "DITCHING FILE: %s\n", eatString(clang_getFileName(file)).c_str());
+        return CXChildVisit_Continue;
+    // } else {
+    //     CXFile file = nullptr;
+    //     clang_getSpellingLocation(loc, &file, nullptr, nullptr, nullptr);
+    //     fprintf(stderr, "NOT DITCHING FILE: %s\n", eatString(clang_getFileName(file)).c_str());
+    }
+
+    char buf[1024];
+    Data &data = *reinterpret_cast<Data *>(client_data);
     switch (clang_getCursorKind(cursor)) {
-    case CXCursor_FunctionDecl:
-        printf("GOT FUNC\n");
-        break;
-    case CXCursor_StructDecl:
-        printf("GOT STRUCT\n");
-        break;
+    case CXCursor_InclusionDirective:
+        return CXChildVisit_Continue;
+    case CXCursor_FunctionDecl: {
+        // printf("GOT FUNC %s\n", eatString(clang_getCursorSpelling(cursor)).c_str());
+        // if (eatString(clang_getCursorSpelling(cursor)) != "RAND_DRBG_set_callbacks")
+        //     break;
+        if (data.funcsOut.empty()) {
+            data.funcsOut = "[";
+        } else {
+            data.funcsOut += ",";
+        }
+        std::string args;
+        for (int i=0, max = clang_Cursor_getNumArguments(cursor); i<max; ++i) {
+            CXCursor arg = clang_Cursor_getArgument(cursor, i);
+            if (!args.empty())
+                args += ", ";
+            CXType type = clang_getCursorType(arg);
+
+            snprintf(buf, sizeof(buf), "{\"name\": \"%s\", \"type\": \"%s\"}",
+                     eatString(clang_getCursorSpelling(arg)).c_str(), typeString(type).c_str());
+
+            args += buf;
+        }
+        snprintf(buf, sizeof(buf), "{ \"name\": \"%s\", \"location\": \"%s\", \"returnValue\": \"%s\", \"arguments\": [%s] }",
+                 eatString(clang_getCursorSpelling(cursor)).c_str(), toString(loc).c_str(),
+                 typeString(clang_getCursorResultType(cursor)).c_str(),
+                 args.c_str());
+        data.funcsOut += buf;
+        break; }
+    case CXCursor_StructDecl: {
+        std::string name = eatString(clang_getCursorSpelling(cursor));
+        if (name.empty() || !data.seenStructs.insert(name).second)
+            break;
+        // printf("GOT STRUCT %s\n", eatString(clang_getCursorSpelling(cursor)).c_str());
+        if (data.funcsOut.empty()) {
+            data.structsOut = "[";
+        } else {
+            data.structsOut += ",";
+        }
+
+        snprintf(buf, sizeof(buf), "{ \"name\": \"%s\", \"location\": \"%s\" }",
+                 eatString(clang_getCursorSpelling(cursor)).c_str(), toString(loc).c_str());
+        data.structsOut += buf;
+        break; }
     default:
         break;
     }
@@ -63,132 +116,41 @@ int main(int argc, char **argv)
     CXIndex index = clang_createIndex(1, 1);
     CXTranslationUnit unit = nullptr;
     CXErrorCode error = clang_parseTranslationUnit2(index, file, &args[0], args.size(), nullptr, 0, clang_defaultEditingTranslationUnitOptions(), &unit);
+    (void)error;
     Data data;
     clang_visitChildren(clang_getTranslationUnitCursor(unit), visitor, &data);
 
-    printf("%d\n", error);
+    // printf("%d\n", error);
     // for (const char *a : args) {
     //     printf("%s ", a);
     // }
-    printf("\n");
+    // printf("\n");
 
     if (unit)
         clang_disposeTranslationUnit(unit);
     if (index)
         clang_disposeIndex(index);
 
-    printf("%s %p %p\n", file, unit, index);
-    // unlink(file);
+    if (data.structsOut.empty()) {
+        data.structsOut = "[]";
+    } else {
+        data.structsOut += ']';
+    }
+
+    if (data.funcsOut.empty()) {
+        data.funcsOut = "[]";
+    } else {
+        data.funcsOut += ']';
+    }
+
+    // printf("%s %p %p\n", file, unit, index);
+    printf("{\"structs\":%s,\"functions\":%s}\n", data.structsOut.c_str(), data.funcsOut.c_str());
+    unlink(file);
     return 0;
 
     // for (int i=1; i<argc; ++i) {
     //     parseFile(argv[i]);
     // }
     // return foo.bar();
-}
-
-const char *opensslincludes() {
-    return ("#include </usr/include/openssl/aes.h>\n"
-            "#include </usr/include/openssl/ebcdic.h>\n"
-            "#include </usr/include/openssl/rand_drbg.h>\n"
-            "#include </usr/include/openssl/asn1.h>\n"
-            "#include </usr/include/openssl/ec.h>\n"
-            "#include </usr/include/openssl/randerr.h>\n"
-            "#include </usr/include/openssl/ecdh.h>\n"
-            "#include </usr/include/openssl/rc2.h>\n"
-            "#include </usr/include/openssl/asn1err.h>\n"
-            "#include </usr/include/openssl/ecdsa.h>\n"
-            "#include </usr/include/openssl/rc4.h>\n"
-            "#include </usr/include/openssl/asn1t.h>\n"
-            "#include </usr/include/openssl/ecerr.h>\n"
-            "#include </usr/include/openssl/rc5.h>\n"
-            "#include </usr/include/openssl/async.h>\n"
-            "#include </usr/include/openssl/engine.h>\n"
-            "#include </usr/include/openssl/ripemd.h>\n"
-            "#include </usr/include/openssl/asyncerr.h>\n"
-            "#include </usr/include/openssl/engineerr.h>\n"
-            "#include </usr/include/openssl/rsa.h>\n"
-            "#include </usr/include/openssl/bio.h>\n"
-            "#include </usr/include/openssl/err.h>\n"
-            "#include </usr/include/openssl/rsaerr.h>\n"
-            "#include </usr/include/openssl/bioerr.h>\n"
-            "#include </usr/include/openssl/evp.h>\n"
-            "#include </usr/include/openssl/safestack.h>\n"
-            "#include </usr/include/openssl/blowfish.h>\n"
-            "#include </usr/include/openssl/evperr.h>\n"
-            "#include </usr/include/openssl/seed.h>\n"
-            "#include </usr/include/openssl/bn.h>\n"
-            "#include </usr/include/openssl/hmac.h>\n"
-            "#include </usr/include/openssl/sha.h>\n"
-            "#include </usr/include/openssl/bnerr.h>\n"
-            "#include </usr/include/openssl/idea.h>\n"
-            "#include </usr/include/openssl/srp.h>\n"
-            "#include </usr/include/openssl/buffer.h>\n"
-            "#include </usr/include/openssl/kdf.h>\n"
-            "#include </usr/include/openssl/srtp.h>\n"
-            "#include </usr/include/openssl/buffererr.h>\n"
-            "#include </usr/include/openssl/kdferr.h>\n"
-            "#include </usr/include/openssl/ssl.h>\n"
-            "#include </usr/include/openssl/camellia.h>\n"
-            "#include </usr/include/openssl/lhash.h>\n"
-            "#include </usr/include/openssl/ssl2.h>\n"
-            "#include </usr/include/openssl/cast.h>\n"
-            "#include </usr/include/openssl/md2.h>\n"
-            "#include </usr/include/openssl/ssl3.h>\n"
-            "#include </usr/include/openssl/cmac.h>\n"
-            "#include </usr/include/openssl/md4.h>\n"
-            "#include </usr/include/openssl/sslerr.h>\n"
-            "#include </usr/include/openssl/cms.h>\n"
-            "#include </usr/include/openssl/md5.h>\n"
-            "#include </usr/include/openssl/stack.h>\n"
-            "#include </usr/include/openssl/cmserr.h>\n"
-            "#include </usr/include/openssl/mdc2.h>\n"
-            "#include </usr/include/openssl/store.h>\n"
-            "#include </usr/include/openssl/comp.h>\n"
-            "#include </usr/include/openssl/modes.h>\n"
-            "#include </usr/include/openssl/storeerr.h>\n"
-            "#include </usr/include/openssl/comperr.h>\n"
-            "#include </usr/include/openssl/obj_mac.h>\n"
-            "#include </usr/include/openssl/symhacks.h>\n"
-            "#include </usr/include/openssl/conf.h>\n"
-            "#include </usr/include/openssl/objects.h>\n"
-            "#include </usr/include/openssl/tls1.h>\n"
-            "#include </usr/include/openssl/conf_api.h>\n"
-            "#include </usr/include/openssl/objectserr.h>\n"
-            "#include </usr/include/openssl/ts.h>\n"
-            "#include </usr/include/openssl/conferr.h>\n"
-            "#include </usr/include/openssl/ocsp.h>\n"
-            "#include </usr/include/openssl/tserr.h>\n"
-            "#include </usr/include/openssl/crypto.h>\n"
-            "#include </usr/include/openssl/ocsperr.h>\n"
-            "#include </usr/include/openssl/txt_db.h>\n"
-            "#include </usr/include/openssl/cryptoerr.h>\n"
-            "#include </usr/include/openssl/opensslv.h>\n"
-            "#include </usr/include/openssl/ui.h>\n"
-            "#include </usr/include/openssl/ct.h>\n"
-            "#include </usr/include/openssl/ossl_typ.h>\n"
-            "#include </usr/include/openssl/uierr.h>\n"
-            "#include </usr/include/openssl/cterr.h>\n"
-            "#include </usr/include/openssl/pem.h>\n"
-            "#include </usr/include/openssl/whrlpool.h>\n"
-            "#include </usr/include/openssl/des.h>\n"
-            "#include </usr/include/openssl/pem2.h>\n"
-            "#include </usr/include/openssl/x509.h>\n"
-            "#include </usr/include/openssl/dh.h>\n"
-            "#include </usr/include/openssl/pemerr.h>\n"
-            "#include </usr/include/openssl/x509_vfy.h>\n"
-            "#include </usr/include/openssl/dherr.h>\n"
-            "#include </usr/include/openssl/pkcs12.h>\n"
-            "#include </usr/include/openssl/x509err.h>\n"
-            "#include </usr/include/openssl/dsa.h>\n"
-            "#include </usr/include/openssl/pkcs12err.h>\n"
-            "#include </usr/include/openssl/x509v3.h>\n"
-            "#include </usr/include/openssl/dsaerr.h>\n"
-            "#include </usr/include/openssl/pkcs7.h>\n"
-            "#include </usr/include/openssl/x509v3err.h>\n"
-            "#include </usr/include/openssl/dtls1.h>\n"
-            "#include </usr/include/openssl/pkcs7err.h>\n"
-            "#include </usr/include/openssl/e_os2.h>\n"
-            "#include </usr/include/openssl/rand.h>\n");
 }
 

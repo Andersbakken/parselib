@@ -5,6 +5,6 @@ set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS}")
 set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/")
 find_package(LibClang REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${LIBCLANG_CXXFLAGS}")
-add_executable(parselib main.cpp)
+add_executable(parselib main.cpp Tools.cpp)
 target_link_libraries(parselib ${LIBCLANG_LIBRARIES})
 
