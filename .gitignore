@@ -40,3 +40,6 @@ cmake_install.cmake
 compile_commands.json
 parselib
 /rules.ninja
+/.gdb_brestore
+/.gdb_brestore.txt
+/.gdb_history
